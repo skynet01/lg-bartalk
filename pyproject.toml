@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lg-bartalk"
-version = "0.1.0"
+version = "0.1.1"
 description = "LG soundbar control with reliable power-state updates"
 readme = "README.md"
 requires-python = ">=3.10"
