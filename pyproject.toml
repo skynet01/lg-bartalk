@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lg-bartalk"
+version = "0.1.0"
+description = "LG soundbar control with reliable power-state updates"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "LICENSE.temescal", "NOTICE"]
+dependencies = ["pycryptodome>=3.23.0"]
+
+[project.optional-dependencies]
+test = ["temescal==0.5"]
+
+[project.urls]
+Source = "https://github.com/skynet01/lg-bartalk"
+Issues = "https://github.com/skynet01/lg-bartalk/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lg_bartalk"]
+
+[tool.ruff]
+target-version = "py310"
