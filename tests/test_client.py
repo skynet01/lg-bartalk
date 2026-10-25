@@ -101,6 +101,82 @@ class TimeoutFailureSocket(FakeSocket):
 class LGSoundbarClientTest(unittest.TestCase):
     """Verify framing, reconnect behavior, and command compatibility."""
 
+    def test_response_without_power_status_uses_normal_idle_deadline(self) -> None:
+        """Models without power status must not retain the initial short deadline."""
+        for response in (
+            {"msg": "SPK_LIST_VIEW_INFO", "data": {"i_vol": 10}},
+            {"msg": "PRODUCT_INFO", "data": {"s_model_name": "test"}},
+        ):
+            with self.subTest(message=response["msg"]):
+                connection = FakeSocket([LGSoundbarClient.encode_packet(response)])
+                delivered = Event()
+                with patch(
+                    "lg_bartalk.socket.create_connection", return_value=connection
+                ):
+                    client = LGSoundbarClient(
+                        "192.0.2.1",
+                        callback=lambda _, delivered=delivered: delivered.set(),
+                    )
+                    try:
+                        self.assertTrue(delivered.wait(1))
+                        self.assertEqual(connection.gettimeout(), 30)
+                        self.assertEqual(connection.sent, [])
+                    finally:
+                        client.close()
+
+    def test_unusable_sessions_increase_recovery_backoff(self) -> None:
+        """Accepting TCP alone must not reset retry delays for unhealthy peers."""
+        for failure in (TimeoutError(), b"\x10\x00\x00\x00\x00"):
+            with self.subTest(failure=repr(failure)):
+                connections = [FakeSocket([failure]) for _ in range(8)]
+                delays = []
+                with patch(
+                    "lg_bartalk.socket.create_connection", SocketFactory(*connections)
+                ):
+                    client = LGSoundbarClient("192.0.2.1")
+
+                    def wait(delay, delays=delays, client=client):
+                        delays.append(delay)
+                        if len(delays) == 7:
+                            client._stop.set()
+                            return True
+                        return False
+
+                    try:
+                        with patch.object(client._stop, "wait", side_effect=wait):
+                            client.listen()
+                        self.assertEqual(delays, [1, 2, 4, 8, 16, 30, 30])
+                    finally:
+                        client.close()
+
+    def test_recovery_backoff_resets_after_valid_response(self) -> None:
+        """A recovered protocol session restores immediate first reconnects."""
+        on = {"msg": "SPK_LIST_VIEW_INFO", "data": {"b_powerstatus": True}}
+        connections = [
+            FakeSocket([TimeoutError()]),
+            FakeSocket([TimeoutError()]),
+            FakeSocket([TimeoutError()]),
+            FakeSocket([LGSoundbarClient.encode_packet(on), TimeoutError()]),
+            FakeSocket([TimeoutError()]),
+        ]
+        delays = []
+        with patch("lg_bartalk.socket.create_connection", SocketFactory(*connections)):
+            client = LGSoundbarClient("192.0.2.1")
+
+            def wait(delay):
+                delays.append(delay)
+                if len(delays) == 3:
+                    client._stop.set()
+                    return True
+                return False
+
+            try:
+                with patch.object(client._stop, "wait", side_effect=wait):
+                    client.listen()
+                self.assertEqual(delays, [1, 2, 1])
+            finally:
+                client.close()
+
     def test_confirmed_off_does_not_reconnect_on_idle_timeout(self) -> None:
         """Off-state idle deadlines bound sends without querying or reconnecting."""
         off = {"msg": "SPK_LIST_VIEW_INFO", "data": {"b_powerstatus": False}}
@@ -541,10 +617,12 @@ class LGSoundbarClientTest(unittest.TestCase):
             "msg": "SPK_LIST_VIEW_INFO",
             "data": {"b_powerstatus": False},
         }
+        metadata = {"msg": "PRODUCT_INFO", "data": {"s_model_name": "test"}}
         shutting_down = FakeSocket(
             [
                 LGSoundbarClient.encode_packet(on_response),
                 LGSoundbarClient.encode_packet(off_notification),
+                LGSoundbarClient.encode_packet(metadata),
                 LGSoundbarClient.encode_packet(off_notification),
             ],
             timeout_when_idle=True,
@@ -555,7 +633,7 @@ class LGSoundbarClientTest(unittest.TestCase):
 
         def callback(response: dict[str, object]) -> None:
             received.append(response)
-            if len(received) == 4:
+            if len(received) == 5:
                 rebound.set()
 
         with patch(
@@ -563,12 +641,15 @@ class LGSoundbarClientTest(unittest.TestCase):
             SocketFactory(shutting_down, reconnected),
         ):
             client = LGSoundbarClient("192.0.2.1", callback=callback)
+            self.addCleanup(client.close)
             self.assertTrue(rebound.wait(1), "listener was not rebound after shutdown")
+            self.assertEqual(shutting_down.gettimeout(), 5)
             self.assertEqual(len(reconnected.sent), 1)
             client.close()
 
         self.assertEqual(
-            received, [on_response, off_notification, off_notification, off_resync]
+            received,
+            [on_response, off_notification, metadata, off_notification, off_resync],
         )
         self.assertEqual(
             json.loads(LGSoundbarClient.decrypt_packet(reconnected.sent[0][5:])),

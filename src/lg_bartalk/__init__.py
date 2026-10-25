@@ -208,7 +208,7 @@ class LGSoundbarClient:
         return plaintext[:-padding_length].decode()
 
     def _connect_locked(self) -> None:
-        """Open a connection with a deadline for its first state response."""
+        """Open a connection with a deadline for its first response."""
         connection = socket.create_connection(
             (self._address, self._port), timeout=_CONNECT_TIMEOUT
         )
@@ -295,6 +295,8 @@ class LGSoundbarClient:
                         if power_on or self._power_on is not False:
                             connection.settimeout(timeout)
                         self._power_on = power_on
+                    elif self._power_on is None:
+                        connection.settimeout(_ON_IDLE_TIMEOUT)
             except TimeoutError:
                 with self._connection_lock:
                     if (
@@ -355,7 +357,10 @@ class LGSoundbarClient:
                     self._socket = None
                     self._power_on = None
                 else:
-                    self._reconnect_delay = _RECONNECT_DELAY
+                    self._reconnect_delay = min(
+                        max(self._reconnect_delay * 2, _RECONNECT_DELAY),
+                        _MAX_RECONNECT_DELAY,
+                    )
                     return
             delay = self._reconnect_delay or _RECONNECT_DELAY
             self._reconnect_delay = min(delay * 2, _MAX_RECONNECT_DELAY)

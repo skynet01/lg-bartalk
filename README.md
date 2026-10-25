@@ -9,10 +9,10 @@ Python application, not as a separate service.
 
 ## Install
 
-Python 3.10 or newer is required. Until a PyPI release is published:
+Python 3.10 or newer is required.
 
 ```sh
-python -m pip install git+https://github.com/skynet01/lg-bartalk.git
+python -m pip install lg-bartalk
 ```
 
 ## Use
@@ -58,11 +58,14 @@ of Temescal's socket/thread internals is not a supported migration path.
 ## When does it check?
 
 - Normally it waits for soundbar notifications instead of polling.
-- A new connection has five seconds to supply its first power response.
-- While power is reported on, 30 seconds without data triggers a reconnect and state request.
+- A new connection has five seconds to supply its first valid response.
+- While power is on or unknown, 30 seconds without data triggers a reconnect and state request.
 - After a reported shutdown, five idle seconds trigger one reconnect to restore the listener.
 - Once off is confirmed on that connection, recurring state requests stop.
-- Broken connections reconnect with a bounded retry delay and request current power state.
+- Broken or unresponsive sessions reconnect with increasing retry delays, capped at 30 seconds.
+
+A valid response resets the retry delay. Models without power-status messages use
+the normal 30-second idle deadline instead of repeatedly reconnecting every five seconds.
 
 It reads complete TCP frames, so split reads cannot silently discard an update.
 Idle receive deadlines while off send no traffic; socket deadlines also bound commands.
