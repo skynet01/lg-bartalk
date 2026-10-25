@@ -1,0 +1,5 @@
+This product includes protocol constants, command payloads and lookup tables
+derived from python-temescal.
+Copyright 2018 Google LLC.
+Original source: https://github.com/google/python-temescal
+Licensed under the Apache License, Version 2.0.
