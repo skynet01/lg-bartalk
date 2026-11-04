@@ -150,7 +150,6 @@ class LGSoundbarClient:
         self._stop = Event()
         self._reconnect_delay = 0
         self._power_on: bool | None = None
-        self._passive_rebind = False
         self._socket: socket.socket | None = None
         self._thread: Thread | None = None
 
@@ -273,9 +272,7 @@ class LGSoundbarClient:
         while not self._stop.is_set():
             connection = self._socket
             if connection is None:
-                self._recover_connection(
-                    None, passive=self._passive_rebind and self._power_on is False
-                )
+                self._recover_connection(None)
                 continue
             try:
                 response = self._read_response(connection)
@@ -301,16 +298,16 @@ class LGSoundbarClient:
                     elif self._power_on is None:
                         connection.settimeout(_ON_IDLE_TIMEOUT)
             except TimeoutError:
-                passive = False
                 with self._connection_lock:
-                    if self._socket is connection and self._power_on is False:
-                        if connection.gettimeout() == _ON_IDLE_TIMEOUT:
-                            # An off-state read deadline is not a state poll.
-                            continue
-                        # The post-shutdown rebind must not query a standby unit.
-                        passive = True
+                    if (
+                        self._socket is connection
+                        and self._power_on is False
+                        and connection.gettimeout() == _ON_IDLE_TIMEOUT
+                    ):
+                        # An off-state read deadline is not a state poll.
+                        continue
                 if not self._stop.is_set():
-                    self._recover_connection(connection, passive=passive)
+                    self._recover_connection(connection)
                 continue
             except (EOFError, OSError):
                 if not self._stop.is_set():
@@ -324,7 +321,6 @@ class LGSoundbarClient:
                 continue
 
             self._reconnect_delay = 0
-            self._passive_rebind = False
 
             try:
                 if self._callback is not None:
@@ -334,13 +330,12 @@ class LGSoundbarClient:
             ):  # Home Assistant callback errors must not kill the listener
                 self.logger.exception("Error handling an LG soundbar response")
 
-    def _recover_connection(
-        self, failed_connection: socket.socket | None, *, passive: bool = False
-    ) -> None:
+    def _recover_connection(self, failed_connection: socket.socket | None) -> None:
         """Reconnect after a socket failure and request one state resync.
 
-        A passive recovery keeps the known-off state and sends nothing, because
-        querying a unit in standby can wake it.
+        While the unit is known to be off the recovery is passive: it keeps the
+        off state and sends nothing, because querying a unit in standby can wake
+        it. Notifications on the new connection report any later power change.
         """
         if self._reconnect_delay and self._stop.wait(self._reconnect_delay):
             return
@@ -348,6 +343,7 @@ class LGSoundbarClient:
             with self._connection_lock:
                 if self._stop.is_set():
                     return
+                passive = self._power_on is False
                 try:
                     if self._socket is failed_connection:
                         self._close_socket(self._socket)
@@ -371,16 +367,13 @@ class LGSoundbarClient:
                     )
                     self._close_socket(self._socket)
                     self._socket = None
-                    self._passive_rebind = passive
                     if not passive:
                         self._power_on = None
                 else:
-                    self._passive_rebind = False
-                    if not passive:
-                        self._reconnect_delay = min(
-                            max(self._reconnect_delay * 2, _RECONNECT_DELAY),
-                            _MAX_RECONNECT_DELAY,
-                        )
+                    self._reconnect_delay = min(
+                        max(self._reconnect_delay * 2, _RECONNECT_DELAY),
+                        _MAX_RECONNECT_DELAY,
+                    )
                     return
             delay = self._reconnect_delay or _RECONNECT_DELAY
             self._reconnect_delay = min(delay * 2, _MAX_RECONNECT_DELAY)

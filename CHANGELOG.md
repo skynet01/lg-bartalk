@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3 — 2026-11-04
+
+- Keep every reconnect passive while the soundbar is known to be off, including after EOF, resets and invalid frames, so no state query can wake a unit in standby. Reconnects while on or with unknown power still request state.
+
 ## 0.1.2 — 2026-11-03
 
 - Rebind the listener after a reported shutdown without sending a state query, so a standby soundbar is not woken. The known-off state is kept, and failed rebind attempts stay passive.
