@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 — 2026-11-03
+
+- Rebind the listener after a reported shutdown without sending a state query, so a standby soundbar is not woken. The known-off state is kept, and failed rebind attempts stay passive.
+
 ## 0.1.1 — 2026-10-25
 
 - Use the normal idle deadline when a valid response omits power status.
