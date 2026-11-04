@@ -262,7 +262,7 @@ class LGSoundbarClientTest(unittest.TestCase):
                 client.close()
 
     def test_real_socket_split_frame_and_eof(self) -> None:
-        """Real socket reads deliver a split frame and recover after peer closure."""
+        """Real socket reads deliver a split frame and recover quietly while off."""
         reader, writer = socket.socketpair()
         self.addCleanup(writer.close)
         off = {"msg": "SPK_LIST_VIEW_INFO", "data": {"b_powerstatus": False}}
@@ -284,7 +284,7 @@ class LGSoundbarClientTest(unittest.TestCase):
                 writer.close()
                 self.assertTrue(delivered.wait(1))
                 self.assertEqual(responses, [off, off])
-                self.assertEqual(len(fresh.sent), 1)
+                self.assertEqual(fresh.sent, [])
             finally:
                 client.close()
 
@@ -673,6 +673,24 @@ class LGSoundbarClientTest(unittest.TestCase):
         with (
             patch("lg_bartalk.socket.create_connection", create_connection),
             patch("lg_bartalk._RECONNECT_DELAY", 0.01),
+        ):
+            client = LGSoundbarClient("192.0.2.1", callback=lambda _: None)
+            self.addCleanup(client.close)
+            self.assertTrue(reconnected.idle_waiting.wait(1))
+            self.assertEqual(reconnected.gettimeout(), 30)
+            self.assertEqual(reconnected.sent, [])
+            client.close()
+
+    def test_connection_reset_while_off_recovers_without_querying(self) -> None:
+        """A reset after a confirmed off report reconnects without a state query."""
+        off = {"msg": "SPK_LIST_VIEW_INFO", "data": {"b_powerstatus": False}}
+        reset = FakeSocket(
+            [LGSoundbarClient.encode_packet(off), ConnectionResetError()]
+        )
+        reconnected = FakeSocket()
+        with patch(
+            "lg_bartalk.socket.create_connection",
+            side_effect=SocketFactory(reset, reconnected),
         ):
             client = LGSoundbarClient("192.0.2.1", callback=lambda _: None)
             self.addCleanup(client.close)
