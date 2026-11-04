@@ -600,8 +600,8 @@ class LGSoundbarClientTest(unittest.TestCase):
             [{"cmd": "get", "msg": "SPK_LIST_VIEW_INFO"}],
         )
 
-    def test_power_off_notification_rebinds_listener_once(self) -> None:
-        """A reported shutdown gets one fresh listener without off-state polling."""
+    def test_power_off_notification_rebinds_listener_passively(self) -> None:
+        """A reported shutdown gets one fresh listener that sends no query."""
         on_response = {
             "cmd": "noti",
             "msg": "SPK_LIST_VIEW_INFO",
@@ -609,11 +609,6 @@ class LGSoundbarClientTest(unittest.TestCase):
         }
         off_notification = {
             "cmd": "noti",
-            "msg": "SPK_LIST_VIEW_INFO",
-            "data": {"b_powerstatus": False},
-        }
-        off_resync = {
-            "cmd": "get",
             "msg": "SPK_LIST_VIEW_INFO",
             "data": {"b_powerstatus": False},
         }
@@ -627,34 +622,64 @@ class LGSoundbarClientTest(unittest.TestCase):
             ],
             timeout_when_idle=True,
         )
-        reconnected = FakeSocket([LGSoundbarClient.encode_packet(off_resync)])
+        reconnected = FakeSocket()
         received: list[dict[str, object]] = []
-        rebound = Event()
-
-        def callback(response: dict[str, object]) -> None:
-            received.append(response)
-            if len(received) == 5:
-                rebound.set()
 
         with patch(
             "lg_bartalk.socket.create_connection",
-            SocketFactory(shutting_down, reconnected),
-        ):
-            client = LGSoundbarClient("192.0.2.1", callback=callback)
+            side_effect=SocketFactory(shutting_down, reconnected),
+        ) as connect:
+            client = LGSoundbarClient("192.0.2.1", callback=received.append)
             self.addCleanup(client.close)
-            self.assertTrue(rebound.wait(1), "listener was not rebound after shutdown")
+            self.assertTrue(
+                reconnected.idle_waiting.wait(1),
+                "listener was not rebound after shutdown",
+            )
             self.assertEqual(shutting_down.gettimeout(), 5)
-            self.assertEqual(len(reconnected.sent), 1)
+            self.assertEqual(reconnected.gettimeout(), 30)
+            self.assertEqual(reconnected.sent, [])
+            self.assertEqual(connect.call_count, 2)
             client.close()
 
         self.assertEqual(
-            received,
-            [on_response, off_notification, metadata, off_notification, off_resync],
+            received, [on_response, off_notification, metadata, off_notification]
         )
-        self.assertEqual(
-            json.loads(LGSoundbarClient.decrypt_packet(reconnected.sent[0][5:])),
-            {"cmd": "get", "msg": "SPK_LIST_VIEW_INFO"},
+
+    def test_failed_passive_rebind_retries_without_querying(self) -> None:
+        """A failed post-shutdown reconnect keeps the known-off state quiet."""
+        off_notification = {
+            "cmd": "noti",
+            "msg": "SPK_LIST_VIEW_INFO",
+            "data": {"b_powerstatus": False},
+        }
+        on_response = {**off_notification, "data": {"b_powerstatus": True}}
+        shutting_down = FakeSocket(
+            [
+                LGSoundbarClient.encode_packet(on_response),
+                LGSoundbarClient.encode_packet(off_notification),
+            ],
+            timeout_when_idle=True,
         )
+        reconnected = FakeSocket()
+        sockets = deque([shutting_down, ConnectionRefusedError(), reconnected])
+
+        def create_connection(_address: tuple[str, int], timeout: float) -> FakeSocket:
+            del timeout
+            item = sockets.popleft()
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        with (
+            patch("lg_bartalk.socket.create_connection", create_connection),
+            patch("lg_bartalk._RECONNECT_DELAY", 0.01),
+        ):
+            client = LGSoundbarClient("192.0.2.1", callback=lambda _: None)
+            self.addCleanup(client.close)
+            self.assertTrue(reconnected.idle_waiting.wait(1))
+            self.assertEqual(reconnected.gettimeout(), 30)
+            self.assertEqual(reconnected.sent, [])
+            client.close()
 
     def test_closed_client_cannot_reopen_on_a_command(self) -> None:
         """A late command after unload cannot restart the connection."""
